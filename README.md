@@ -1,11 +1,6 @@
-## My Project
+# Automating cross-account backup of Amazon RDS Oracle databases with AWS Backup
 
-TODO: Fill this README out!
-
-Be sure to:
-
-* Change the title in this README
-* Edit your repository description on GitHub
+This repository goes along with a blog post discussing how to deploy AWS Backup to automate Amazon RDS Oracle backups cross-account and cross-region. The master branch includes the latest post's code described through-out the blog.
 
 ## Security
 
@@ -14,4 +9,3 @@ See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more inform
 ## License
 
 This library is licensed under the MIT-0 License. See the LICENSE file.
-

@@ -1,0 +1,265 @@
+# *
+# * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# * SPDX-License-Identifier: MIT-0
+# *
+# * Permission is hereby granted, free of charge, to any person obtaining a copy of this
+# * software and associated documentation files (the "Software"), to deal in the Software
+# * without restriction, including without limitation the rights to use, copy, modify,
+# * merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+# * permit persons to whom the Software is furnished to do so.
+# *
+# * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+# * INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+# * PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# * HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# * OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+# *
+AWSTemplateFormatVersion: 2010-09-09
+Description: Automating cross-account backup of Amazon RDS Oracle databases with AWS Backup - Account A, Region A
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "AWS Backup Configuration"
+        Parameters:
+          - pBackupIAMRoleName
+          - pBackupVaultName
+          - pCentralBackupAccountID
+          - pBackupPlanName
+          - pScheduleExpression
+          - pConditionKey
+          - pConditionKeyValue
+          - pDeleteAfterDays
+          - pCopyDeleteAfterDays
+    ParameterLabels:
+      pBackupIAMRoleName:
+        default: AWS Backup IAM Role
+      pBackupVaultName:
+        default: AWS Backup Vault Name
+      pCentralBackupAccountID:
+        default: Central Backup Account ID
+      pBackupPlanName:
+        default: Backup Plan Name
+      pScheduleExpression:
+        default: Backup Plan Schedule Expression
+      pConditionKey:
+        default: Backup Resource Condition Key
+      pConditionKeyValue:
+        default: Backup Resource Condition Key Value
+      pDeleteAfterDays:
+        default: Delete After Days for Local Account Backup
+      pCopyDeleteAfterDays:
+        default: Delete After Days for Cross-Account Backup
+Parameters:
+  pBackupIAMRoleName:
+    Type: String
+    Description: A name for the IAM role, up to 64 characters in length.
+  pBackupVaultName:
+    Type: String
+    Description: The name of a logical container where backups are stored. Backup vaults are identified by names that are unique to the account used to create them and the AWS Region where they are created.
+  pCentralBackupAccountID:
+    Type: String
+    Description: The AWS Account ID of the account that the backups will be copied to.
+  pDeleteAfterDays:
+    Type: String
+    Description: Specifies the number of days after creation that a recovery point is deleted at the local backup vault.
+  pCopyDeleteAfterDays:
+    Type: String
+    Description: Specifies the number of days after creation that a recovery point is deleted at the cross-account backup vault.
+  pBackupPlanName:
+    Type: String
+    Description: The display name of a backup plan.
+  pScheduleExpression:
+    Type: String
+    Default: cron(0 0/4 * * ? *)
+    Description: A CRON expression specifying when AWS Backup initiates a backup job. Default value set to every 4hrs <cron(0 0/4 * * ? *)>
+  pConditionKey:
+    Type: String
+    Description: 'The key in a key-value pair. For example, in "Department": "accounting", "Department" is the key.'
+  pConditionKeyValue:
+    Type: String
+    Description: 'The value in a key-value pair. For example, in "Department": "accounting", "accounting" is the value.'
+Resources:
+# IAM Role for AWS Backup
+  rAWSBackupIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Allows AWS Backup to call AWS services on your behalf
+      AssumeRolePolicyDocument: |
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "Service": "backup.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+              }
+            ]
+          }
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup
+        - arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestores
+      RoleName: !Ref pBackupIAMRoleName
+
+# KMS Customer Managed Key (CMK) and AWS Backup Vault
+  rKMSCMK:
+    Type: AWS::KMS::Key
+    Properties:
+      EnableKeyRotation: true
+      Description: KMS key for AWS Backup Vault
+      KeyPolicy: !Sub |
+          {
+              "Version": "2012-10-17",
+              "Id": "backup-vault-policy-${pBackupVaultName}",
+              "Statement": [
+                  {
+                      "Sid": "Enable IAM User Permissions",
+                      "Effect": "Allow",
+                      "Principal": {
+                          "AWS": "arn:aws:iam::${AWS::AccountId}:root"
+                      },
+                      "Action": "kms:*",
+                      "Resource": "*"
+                  },
+                  {
+                      "Sid": "Allow access from Backup account to copy backups",
+                      "Effect": "Allow",
+                      "Principal": {
+                          "AWS": "*"
+                      },
+                      "Action": [
+                          "kms:CreateGrant",
+                          "kms:Decrypt",
+                          "kms:GenerateDataKey*",
+                          "kms:DescribeKey"
+                      ],
+                      "Resource": "*",
+                      "Condition": {
+                          "StringEquals": {
+                              "kms:CallerAccount": "${pCentralBackupAccountID}"
+                          }
+                      }
+                  }
+              ]
+          }
+
+  rKMSCMKAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub "alias/cmk-${pBackupVaultName}"
+      TargetKeyId: !Ref rKMSCMK
+
+  rBackupVault:
+    Type: AWS::Backup::BackupVault
+    Properties:
+      AccessPolicy: !Sub |
+          {
+              "Version": "2012-10-17",
+              "Statement": [
+                  {
+                      "Effect": "Allow",
+                      "Principal": {
+                          "AWS": "arn:aws:iam::${pCentralBackupAccountID}:root"
+                      },
+                      "Action": "backup:CopyIntoBackupVault",
+                      "Resource": "*"
+                  }
+              ]
+          }
+      BackupVaultName: !Ref pBackupVaultName
+      EncryptionKeyArn: !GetAtt rKMSCMK.Arn
+
+# Backup Plan
+  rBackupPlan:
+    Type: AWS::Backup::BackupPlan
+    Properties:
+      BackupPlan:
+        BackupPlanName: !Ref pBackupPlanName
+        BackupPlanRule:
+          -
+            RuleName: !Sub ${pBackupPlanName}-rule
+            TargetBackupVault: !Ref rBackupVault
+            ScheduleExpression: !Ref pScheduleExpression
+            StartWindowMinutes: 60
+            CompletionWindowMinutes: 120
+            CopyActions:
+              - 
+                DestinationBackupVaultArn: !Sub arn:aws:backup:${AWS::Region}:${pCentralBackupAccountID}:backup-vault:${pBackupVaultName}
+                Lifecycle:
+                  DeleteAfterDays: !Ref pCopyDeleteAfterDays
+            Lifecycle:
+              DeleteAfterDays: !Ref pDeleteAfterDays
+
+  rTagBasedBackupSelection:
+    Type: AWS::Backup::BackupSelection
+    Properties:
+      BackupSelection:
+        SelectionName: TagBasedBackupSelection
+        IamRoleArn: !GetAtt rAWSBackupIAMRole.Arn
+        ListOfTags:
+          - ConditionType: STRINGEQUALS
+            ConditionKey: !Ref pConditionKey
+            ConditionValue: !Ref pConditionKeyValue
+      BackupPlanId: !Ref rBackupPlan
+
+# EventBridge Rule
+
+  rIAMManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: "AWSBackupRDSAuroraEventBridgePolicy"
+      Path: "/service-role/"
+      PolicyDocument: !Sub |
+          {
+              "Version": "2012-10-17",
+              "Statement": [
+                  {
+                      "Effect": "Allow",
+                      "Action": [
+                          "events:PutEvents"
+                      ],
+                      "Resource": [
+                          "arn:aws:events:${AWS::Region}:${pCentralBackupAccountID}:event-bus/default"
+                      ]
+                  }
+              ]
+          }
+
+  rIAMRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      Path: "/service-role/"
+      RoleName: "AWSBackupRDSAuroraEventBridgeRole"
+      AssumeRolePolicyDocument: "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"events.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"}]}"
+      MaxSessionDuration: 3600
+      ManagedPolicyArns:
+        - !Ref rIAMManagedPolicy
+
+  rEventsRule:
+    Type: "AWS::Events::Rule"
+    Properties:
+      Name: "AWSBackupCopyCompleteRule"
+      Description: "Event Rule for AWS Backup Copy Job Complete Event, RDS and Aurora resources"
+      EventPattern: !Sub |
+          {
+            "source": ["aws.backup"],
+            "detail-type": ["Copy Job State Change"],
+            "detail": {
+              "state": ["COMPLETED"],
+              "resourceType": ["RDS", "Aurora"],
+              "destinationBackupVaultArn": [{
+                "prefix": "arn:aws:backup:${AWS::Region}:${pCentralBackupAccountID}"
+              }]
+            }
+          }
+      State: "ENABLED"
+      Targets: 
+      - 
+        Arn: !Sub "arn:aws:events:${AWS::Region}:${pCentralBackupAccountID}:event-bus/default"
+        RoleArn: !GetAtt rIAMRole.Arn
+        Id: "TargetVersion1"
+      EventBusName: "default"
+
