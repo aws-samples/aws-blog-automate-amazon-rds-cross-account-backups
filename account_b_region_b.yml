@@ -24,12 +24,15 @@ Metadata:
           default: "AWS Backup Configuration"
         Parameters:
           - pBackupVaultName
-          - pAWSOrganizationID   
+          - pAWSOrganizationID
+          - pKeyAdminIdentity
     ParameterLabels:
       pBackupVaultName:
         default: AWS Backup Vault Name
       pAWSOrganizationID:
         default: AWS Organization ID
+      pKeyAdminIdentity:
+        default: IAM user, IAM role or account root that gets permissions to manage the AWS KMS key
 
 Parameters:
   pBackupVaultName:
@@ -38,8 +41,13 @@ Parameters:
   pAWSOrganizationID:
     Type: String
     Description: AWS Organizations ID
+  pKeyAdminIdentity:
+    Type: String
+    Description: 'The principal element of the KMS key administrator. For example, "root", "user/ExampleAdminUser" or "role/ExampleAdminRole"'
+
 Resources:
 # KMS Customer Managed Key (CMK) and AWS Backup Vault
+# Note: Second policy statement is not supported through the web console, only through CloudFormation or API call.
   rKMSCMK:
     Type: AWS::KMS::Key
     Properties:
@@ -54,9 +62,17 @@ Resources:
                       "Sid": "Enable IAM User Permissions",
                       "Effect": "Allow",
                       "Principal": {
-                          "AWS": "arn:aws:iam::${AWS::AccountId}:root"
+                          "AWS": "arn:aws:iam::${AWS::AccountId}:${pKeyAdminIdentity}"
                       },
-                      "Action": "kms:*",
+                      "Action": [
+                        "kms:PutKeyPolicy",
+                        "kms:ScheduleKeyDeletion",
+                        "kms:EnableKeyRotation",
+                        "kms:DescribeKey",
+                        "kms:CreateAlias",
+                        "kms:DeleteAlias",
+                        "kms:CreateGrant"
+                      ],
                       "Resource": "*"
                   },
                   {
@@ -99,7 +115,7 @@ Resources:
                       "Effect": "Allow",
                       "Principal": "*",
                       "Action": "backup:CopyIntoBackupVault",
-                      "Resource": "*",
+                      "Resource": "arn:aws:backup:${AWS::Region}:${AWS::AccountId}:backup-vault:${pBackupVaultName}",
                       "Condition": {
                           "StringEquals": {
                               "aws:PrincipalOrgID": "${pAWSOrganizationID}"

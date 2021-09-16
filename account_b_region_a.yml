@@ -27,6 +27,7 @@ Metadata:
           - pBackupVaultName
           - pAWSOrganizationID
           - pDestinationAWSRegion
+          - pKeyAdminIdentity
    
     ParameterLabels:
       pBackupIAMRoleName:
@@ -37,6 +38,8 @@ Metadata:
         default: AWS Organization ID
       pDestinationAWSRegion:
         default: AWS Backup Destination Region
+      pKeyAdminIdentity:
+        default: IAM user, IAM role or account root that gets permissions to manage the AWS KMS key
 
 Parameters:
   pBackupIAMRoleName:
@@ -69,6 +72,10 @@ Parameters:
       - eu-west-3
       - eu-north-1
       - sa-east-1
+  pKeyAdminIdentity:
+    Type: String
+    Description: 'The principal element of the KMS key administrator. For example, "root", "user/ExampleAdminUser" or "role/ExampleAdminRole"'
+
 Resources:
 # IAM Role for AWS Backup
   rAWSBackupIAMRole:
@@ -90,7 +97,6 @@ Resources:
           }
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup
-        - arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestores
       RoleName: !Ref pBackupIAMRoleName
 
   rIAMPolicyRDSServiceLinkedRole:
@@ -110,7 +116,8 @@ Resources:
                   }
               ]
           }
-# KMS Customer Managed Key (CMK) and AWS Backup Vault
+# AWS KMS Key and AWS Backup Vault
+# Note: Second policy statement is not supported through the web console, only through CloudFormation or API call.
   rKMSCMK:
     Type: AWS::KMS::Key
     Properties:
@@ -125,9 +132,17 @@ Resources:
                       "Sid": "Enable IAM User Permissions",
                       "Effect": "Allow",
                       "Principal": {
-                          "AWS": "arn:aws:iam::${AWS::AccountId}:root"
+                          "AWS": "arn:aws:iam::${AWS::AccountId}:${pKeyAdminIdentity}"
                       },
-                      "Action": "kms:*",
+                      "Action": [
+                        "kms:PutKeyPolicy",
+                        "kms:ScheduleKeyDeletion",
+                        "kms:EnableKeyRotation",
+                        "kms:DescribeKey",
+                        "kms:CreateAlias",
+                        "kms:DeleteAlias",
+                        "kms:CreateGrant"
+                      ],
                       "Resource": "*"
                   },
                   {
@@ -170,7 +185,7 @@ Resources:
                       "Effect": "Allow",
                       "Principal": "*",
                       "Action": "backup:CopyIntoBackupVault",
-                      "Resource": "*",
+                      "Resource": "arn:aws:backup:${AWS::Region}:${AWS::AccountId}:backup-vault:${pBackupVaultName}",
                       "Condition": {
                           "StringEquals": {
                               "aws:PrincipalOrgID": "${pAWSOrganizationID}"
@@ -206,7 +221,7 @@ Resources:
                 Action:
                   - backup:StartCopyJob
                   - backup:DescribeRecoveryPoint
-                Resource: !Sub arn:aws:*:*:${AWS::AccountId}:*:*
+                Resource: '*'
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
@@ -298,6 +313,7 @@ Resources:
               return json.dumps(response, default=str)
       MemorySize: 128
       Role: !GetAtt rLambdaIAMRole.Arn
+      ReservedConcurrentExecutions: 5
       Runtime: python3.8
       Timeout: 3
       TracingConfig: 

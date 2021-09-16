@@ -32,6 +32,7 @@ Metadata:
           - pConditionKeyValue
           - pDeleteAfterDays
           - pCopyDeleteAfterDays
+          - pKeyAdminIdentity
     ParameterLabels:
       pBackupIAMRoleName:
         default: AWS Backup IAM Role
@@ -51,6 +52,8 @@ Metadata:
         default: Delete After Days for Local Account Backup
       pCopyDeleteAfterDays:
         default: Delete After Days for Cross-Account Backup
+      pKeyAdminIdentity:
+        default: IAM user, IAM role or account root that gets permissions to manage the AWS KMS key
 Parameters:
   pBackupIAMRoleName:
     Type: String
@@ -80,6 +83,9 @@ Parameters:
   pConditionKeyValue:
     Type: String
     Description: 'The value in a key-value pair. For example, in "Department": "accounting", "accounting" is the value.'
+  pKeyAdminIdentity:
+    Type: String
+    Description: 'The principal element of the KMS key administrator. For example, "root", "user/ExampleAdminUser" or "role/ExampleAdminRole"'
 Resources:
 # IAM Role for AWS Backup
   rAWSBackupIAMRole:
@@ -101,10 +107,10 @@ Resources:
           }
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup
-        - arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestores
       RoleName: !Ref pBackupIAMRoleName
 
-# KMS Customer Managed Key (CMK) and AWS Backup Vault
+# AWS KMS Key and AWS Backup Vault
+# Note: Second policy statement is not supported through the web console, only through CloudFormation or API call.
   rKMSCMK:
     Type: AWS::KMS::Key
     Properties:
@@ -119,9 +125,17 @@ Resources:
                       "Sid": "Enable IAM User Permissions",
                       "Effect": "Allow",
                       "Principal": {
-                          "AWS": "arn:aws:iam::${AWS::AccountId}:root"
+                          "AWS": "arn:aws:iam::${AWS::AccountId}:${pKeyAdminIdentity}"
                       },
-                      "Action": "kms:*",
+                      "Action": [
+                        "kms:PutKeyPolicy",
+                        "kms:ScheduleKeyDeletion",
+                        "kms:EnableKeyRotation",
+                        "kms:DescribeKey",
+                        "kms:CreateAlias",
+                        "kms:DeleteAlias",
+                        "kms:CreateGrant"
+                      ],
                       "Resource": "*"
                   },
                   {
@@ -165,7 +179,7 @@ Resources:
                           "AWS": "arn:aws:iam::${pCentralBackupAccountID}:root"
                       },
                       "Action": "backup:CopyIntoBackupVault",
-                      "Resource": "*"
+                      "Resource": "arn:aws:backup:${AWS::Region}:${AWS::AccountId}:backup-vault:${pBackupVaultName}"
                   }
               ]
           }
@@ -173,6 +187,7 @@ Resources:
       EncryptionKeyArn: !GetAtt rKMSCMK.Arn
 
 # Backup Plan
+# Note: 'CompletionWindowMinutes' value might not be sufficient for the first backup depending on the resource size. If the initial backup job fails, adjust the value accordingly or run the first backup manually.
   rBackupPlan:
     Type: AWS::Backup::BackupPlan
     Properties:
@@ -184,7 +199,7 @@ Resources:
             TargetBackupVault: !Ref rBackupVault
             ScheduleExpression: !Ref pScheduleExpression
             StartWindowMinutes: 60
-            CompletionWindowMinutes: 120
+            CompletionWindowMinutes: 180
             CopyActions:
               - 
                 DestinationBackupVaultArn: !Sub arn:aws:backup:${AWS::Region}:${pCentralBackupAccountID}:backup-vault:${pBackupVaultName}
